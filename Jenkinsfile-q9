@@ -1,0 +1,66 @@
+pipeline {
+  agent any
+  environment {
+    IMAGE = "krthikeya/health-app:${BUILD_NUMBER}"
+  }
+  stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+      }
+    }
+    stage('Secret Scan (Gitleaks)') {
+      steps {
+        sh 'docker run --rm -v $PWD:/repo zricethezav/gitleaks:latest detect --source /repo --no-git -v'
+      }
+    }
+    stage('Dependency Scan') {
+      steps {
+        sh 'docker run --rm -v $PWD:/app -w /app node:20-alpine sh -c "npm install --package-lock-only && npm audit --audit-level=high"'
+      }
+    }
+    stage('SAST (Semgrep)') {
+      steps {
+        sh 'docker run --rm -v $PWD:/src -w /src semgrep/semgrep semgrep --config auto --error .'
+      }
+    }
+    stage('Dockerfile Lint (Hadolint)') {
+      steps {
+        sh 'docker run --rm -i hadolint/hadolint hadolint --failure-threshold error - < Dockerfile'
+      }
+    }
+    stage('Build') {
+      steps {
+        sh 'docker build -t $IMAGE .'
+      }
+    }
+    stage('Image Scan (Trivy)') {
+      steps {
+        sh 'docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image --severity HIGH,CRITICAL --exit-code 1 $IMAGE'
+      }
+    }
+    stage('Push') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'U', passwordVariable: 'P')]) {
+          sh 'echo $P | docker login -u $U --password-stdin && docker push $IMAGE'
+        }
+      }
+    }
+    stage('Deploy') {
+      steps {
+        sh '''
+          sed "s|IMAGE_PLACEHOLDER|$IMAGE|" k8s/secure-deployment.yaml | kubectl apply -f -
+          kubectl rollout status deployment/health-app
+        '''
+      }
+    }
+    stage('DAST (OWASP ZAP)') {
+      steps {
+        sh '''
+          NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+          docker run --rm --network host ghcr.io/zaproxy/zaproxy:stable zap-baseline.py -t http://$NODE_IP:30085 || true
+        '''
+      }
+    }
+  }
+}

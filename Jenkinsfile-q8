@@ -1,0 +1,58 @@
+pipeline {
+  agent any
+  environment {
+    IMAGE = "krthikeya/demo-app:${BUILD_NUMBER}"
+  }
+  stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+      }
+    }
+    stage('Build & Push') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'U', passwordVariable: 'P')]) {
+          sh '''
+            docker build -t $IMAGE .
+            echo $P | docker login -u $U --password-stdin
+            docker push $IMAGE
+          '''
+        }
+      }
+    }
+    stage('Find idle color') {
+      steps {
+        script {
+          def live = sh(script: "kubectl get svc demo-live -o jsonpath='{.spec.selector.color}'", returnStdout: true).trim()
+          env.OLD = live
+          env.NEW = (live == 'blue') ? 'green' : 'blue'
+        }
+      }
+    }
+    stage('Deploy to idle') {
+      steps {
+        sh '''
+          sed "s|COLOR-BUILD|$NEW-$BUILD_NUMBER|; s|COLOR|$NEW|g; s|IMAGE_TAG|$IMAGE|" k8s/blue-green.yaml | kubectl apply -f -
+          kubectl rollout status deployment/demo-$NEW
+        '''
+      }
+    }
+    stage('Approve switch') {
+      steps {
+        input message: "Switch traffic to ${env.NEW}?"
+      }
+    }
+    stage('Switch traffic') {
+      steps {
+        sh '''
+          kubectl patch svc demo-live -p "{\\"spec\\":{\\"selector\\":{\\"app\\":\\"demo\\",\\"color\\":\\"$NEW\\"}}}"
+        '''
+      }
+    }
+  }
+  post {
+    failure {
+      echo "Rollback: traffic still on ${env.OLD}"
+    }
+  }
+}

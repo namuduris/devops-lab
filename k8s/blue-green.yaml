@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-COLOR
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: demo
+      color: COLOR
+  template:
+    metadata:
+      labels:
+        app: demo
+        color: COLOR
+    spec:
+      containers:
+        - name: demo
+          image: IMAGE_TAG
+          env:
+            - name: VERSION
+              value: "COLOR-BUILD"
+          ports:
+            - containerPort: 3000
